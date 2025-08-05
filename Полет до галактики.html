@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Визуализация: Лоренцево сокращение</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overscroll-behavior: none;
+            background-color: #000000;
+        }
+        #visualization-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+        #visualization {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        .panel {
+            position: absolute;
+            background: rgba(17, 24, 39, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+            padding: 1rem 1.5rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            z-index: 100;
+            cursor: default;
+        }
+        #camera-controls-panel {
+             top: 10px;
+             left: 50%;
+             transform: translateX(-50%);
+             width: 320px;
+        }
+        #hud-panel {
+            bottom: 1.5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 400px;
+            align-items: center;
+        }
+        #model-loader-panel {
+            top: 10px;
+            right: 10px;
+            width: 320px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+            width: 100%;
+        }
+        .control-group label {
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .control-group input[type="range"], .control-group input[type="text"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 36px;
+            background: #4b5563;
+            border-radius: 8px;
+            outline: none;
+            cursor: pointer;
+            padding: 0 10px;
+            color: white;
+        }
+        .control-group input[type="range"] {
+             padding: 0;
+             height: 4px;
+        }
+        .control-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #a78bfa;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid #111827;
+        }
+        .value-display {
+            font-size: 12px;
+            color: #bbb;
+            align-self: flex-end;
+        }
+        .hud-item {
+            font-size: 1rem;
+            color: white;
+        }
+        .hud-item span {
+            font-weight: 700;
+            color: #a78bfa;
+            min-width: 100px;
+            display: inline-block;
+        }
+        .load-button {
+            background-color: #a78bfa;
+            color: #111827;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .load-button:hover {
+            background-color: #8b5cf6;
+        }
+    </style>
+</head>
+<body class="text-gray-200 overflow-hidden">
+
+    <div id="visualization-container">
+        <canvas id="visualization"></canvas>
+    </div>
+
+    <!-- Панель управления камерой -->
+    <div id="camera-controls-panel" class="panel">
+        <div class="control-group">
+            <label for="movementSpeed">Скорость камеры: <span id="movementSpeedValue" class="value-display">50</span></label>
+            <input type="range" id="movementSpeed" min="10" max="1000" step="10" value="50">
+        </div>
+        <div class="control-group">
+            <label for="mouseSensitivity">Чувствительность мыши: <span id="mouseSensitivityValue" class="value-display">0.0020</span></label>
+            <input type="range" id="mouseSensitivity" min="0" max="0.005" step="0.0001" value="0.002">
+        </div>
+    </div>
+
+    <!-- Панель загрузки модели -->
+    <div id="model-loader-panel" class="panel">
+        <div class="control-group">
+            <label for="modelUrl">URL 3D-модели (.glb):</label>
+            <input type="text" id="modelUrl" placeholder="Вставьте ссылку сюда...">
+        </div>
+        <button id="loadModelBtn" class="load-button">Загрузить</button>
+    </div>
+
+    <!-- HUD -->
+    <div id="hud-panel" class="panel">
+        <div class="hud-item">Автопилот: <span id="autopilot-status">ВЫКЛ</span></div>
+        <div class="hud-item">Скорость: <span id="speed-display">0.000% c</span></div>
+        <div class="hud-item">Время на корабле: <span id="ship-time-display">0 лет</span></div>
+        <div class="hud-item">Земное время: <span id="earth-time-display">0 лет</span></div>
+        <div class="hud-item">Расстояние до цели: <span id="distance-display">7.00 млрд св. лет</span></div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // --- Основные переменные ---
+        let scene, camera, renderer;
+        let ship, stars, grid, galaxy, engineLight;
+        let originalStarPositions;
+
+        // --- Состояние симуляции ---
+        const C = 1; // Скорость света
+        let shipVelocity = 0;
+        let isFlying = false;
+        let earthTime = 0;
+        let shipTime = 0;
+        const GALAXY_DISTANCE = 7e9; // 7 миллиардов световых лет
+
+        // --- Переменные для управления камерой ---
+        let controls = { isLocked: false };
+        let euler = new THREE.Euler(0, 0, 0, 'YXZ');
+        const PITCH_LIMIT = Math.PI / 2 - 0.01; 
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false, moveUp = false, moveDown = false;
+        let isMouseDown = false;
+        let prevTime = performance.now();
+        const velocity = new THREE.Vector3(); 
+        const rotationVelocity = new THREE.Vector3(); 
+        const direction = new THREE.Vector3();
+        let mouseSensitivity = 0.002;
+        let movementSpeed = 50.0;
+
+        // --- UI ---
+        let panelsVisible = true;
+        const allPanels = [];
+
+        // --- Инициализация ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.Fog(0x000000, 1000, 15000);
+
+            const container = document.getElementById('visualization-container');
+            camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 20000);
+            camera.position.set(0, 10, 50);
+            euler.setFromQuaternion(camera.quaternion);
+
+            const canvas = document.querySelector('#visualization');
+            renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setClearColor(0x000000, 1);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(0xffffff, 1, 0, 1);
+            pointLight.position.set(0, 50, 50);
+            scene.add(pointLight);
+
+            createSceneObjects();
+            setupInputListeners();
+            setupUIControls();
+            
+            onWindowResize();
+            animate();
+        }
+
+        function createSceneObjects() {
+            // Корабль по умолчанию
+            const shipGeo = new THREE.ConeGeometry(5, 20, 32);
+            const shipMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.8, roughness: 0.2 });
+            ship = new THREE.Mesh(shipGeo, shipMat);
+            ship.rotation.x = Math.PI / 2;
+            scene.add(ship);
+
+            // Свет двигателя
+            engineLight = new THREE.PointLight(0x88aaff, 0, 100, 2);
+            engineLight.position.y = -12; // Позади конуса
+            engineLight.visible = false;
+            ship.add(engineLight);
+
+            // Звезды
+            const starVertices = [];
+            for (let i = 0; i < 20000; i++) {
+                const x = THREE.MathUtils.randFloatSpread(20000);
+                const y = THREE.MathUtils.randFloatSpread(20000);
+                const z = THREE.MathUtils.randFloatSpread(20000);
+                starVertices.push(x, y, z);
+            }
+            const starGeo = new THREE.BufferGeometry();
+            starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+            originalStarPositions = new Float32Array(starVertices);
+            const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 2.5 });
+            stars = new THREE.Points(starGeo, starMat);
+            scene.add(stars);
+
+            // Сетка
+            grid = new THREE.GridHelper(20000, 100, 0x444444, 0x444444);
+            scene.add(grid);
+
+            // Галактика
+            const galaxyTexture = createGalaxyTexture();
+            const galaxyMat = new THREE.SpriteMaterial({ map: galaxyTexture, blending: THREE.AdditiveBlending, transparent: true });
+            galaxy = new THREE.Sprite(galaxyMat);
+            galaxy.position.z = -10000;
+            galaxy.scale.set(1000, 1000, 1);
+            scene.add(galaxy);
+        }
+        
+        // --- Цикл анимации ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const currentTime = performance.now();
+            const deltaTime = (currentTime - prevTime) / 1000;
+            prevTime = currentTime;
+            
+            updateCamera(deltaTime);
+            updateSimulation(deltaTime);
+            updateLorentzContraction();
+            updateHUD();
+            
+            renderer.render(scene, camera);
+        }
+
+        function updateSimulation(deltaTime) {
+            if (isFlying) {
+                shipVelocity += (0.999999 - shipVelocity) * 0.1 * deltaTime;
+            } else {
+                shipVelocity -= shipVelocity * 1.0 * deltaTime;
+                if (shipVelocity < 0.00001) {
+                    shipVelocity = 0;
+                }
+            }
+
+            engineLight.visible = shipVelocity > 0;
+            engineLight.intensity = shipVelocity * 20;
+
+            if (shipVelocity > 0) {
+                const gamma = 1 / Math.sqrt(1 - shipVelocity * shipVelocity);
+                shipTime += deltaTime / gamma;
+                earthTime += deltaTime;
+            }
+        }
+
+        function updateLorentzContraction() {
+            if (shipVelocity <= 0.0001) {
+                if (grid.scale.z !== 1) {
+                    stars.geometry.attributes.position.copyArray(originalStarPositions);
+                    stars.geometry.attributes.position.needsUpdate = true;
+                    grid.scale.z = 1;
+                }
+                return;
+            }
+
+            const gamma = 1 / Math.sqrt(1 - shipVelocity * shipVelocity);
+            const contractedPositions = new Float32Array(originalStarPositions.length);
+            
+            for (let i = 0; i < originalStarPositions.length; i += 3) {
+                contractedPositions[i] = originalStarPositions[i];
+                contractedPositions[i+1] = originalStarPositions[i+1];
+                if (originalStarPositions[i+2] < 0) {
+                    contractedPositions[i+2] = originalStarPositions[i+2] / gamma;
+                } else {
+                    contractedPositions[i+2] = originalStarPositions[i+2];
+                }
+            }
+
+            stars.geometry.attributes.position.copyArray(contractedPositions);
+            stars.geometry.attributes.position.needsUpdate = true;
+
+            grid.scale.z = 1 / gamma;
+        }
+
+        function updateHUD() {
+            document.getElementById('autopilot-status').textContent = isFlying ? 'ВКЛ' : 'ВЫКЛ';
+            document.getElementById('speed-display').textContent = `${(shipVelocity * 100).toFixed(4)}% c`;
+            document.getElementById('ship-time-display').textContent = `${(shipTime / (365 * 24 * 3600)).toFixed(2)} лет`;
+            document.getElementById('earth-time-display').textContent = `${(earthTime / (365 * 24 * 3600)).toFixed(2)} лет`;
+
+            const gamma = 1 / Math.sqrt(1 - shipVelocity * shipVelocity);
+            const contractedDistance = GALAXY_DISTANCE / gamma;
+            document.getElementById('distance-display').textContent = `${(contractedDistance / 1e9).toFixed(2)} млрд св. лет`;
+        }
+
+        // --- Функции управления камерой ---
+        function setupInputListeners() {
+            const vizContainer = document.getElementById('visualization-container');
+            
+            vizContainer.addEventListener('click', () => {
+                if (!controls.isLocked) vizContainer.requestPointerLock();
+            });
+
+            const panels = document.querySelectorAll('.panel');
+            panels.forEach(panel => {
+                allPanels.push(panel);
+                panel.addEventListener('click', (event) => event.stopPropagation());
+            });
+            
+            document.addEventListener('pointerlockchange', () => {
+                controls.isLocked = (document.pointerLockElement === vizContainer);
+            });
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mousedown', onMouseDown);
+            document.addEventListener('mouseup', onMouseUp);
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+        }
+        
+        const onMouseMove = (event) => {
+            if (!controls.isLocked || !isMouseDown) return;
+            const movementX = event.movementX || 0;
+            const movementY = event.movementY || 0;
+            rotationVelocity.y -= movementX * mouseSensitivity;
+            rotationVelocity.x -= movementY * mouseSensitivity;
+        };
+        
+        const onMouseDown = (event) => {
+            if (controls.isLocked && event.button === 0) isMouseDown = true;
+        };
+
+        const onMouseUp = (event) => {
+            if (event.button === 0) isMouseDown = false;
+        };
+        
+        const onKeyDown = (event) => {
+            if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+
+            switch (event.code) {
+                case 'KeyY': toggleFlight(); break;
+                case 'KeyG': togglePanelsVisibility(); break;
+                case 'KeyW': moveForward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'KeyR': moveUp = true; break;
+                case 'KeyF': moveDown = true; break;
+            }
+        };
+
+        const onKeyUp = (event) => {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyD': moveRight = false; break;
+                case 'KeyR': moveUp = false; break;
+                case 'KeyF': moveDown = false; break;
+            }
+        };
+
+        function updateCamera(deltaTime) {
+            if (controls.isLocked === true) {
+                rotationVelocity.x -= rotationVelocity.x * 8.0 * deltaTime;
+                rotationVelocity.y -= rotationVelocity.y * 8.0 * deltaTime;
+                euler.y += rotationVelocity.y;
+                euler.x += rotationVelocity.x;
+                euler.x = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, euler.x));
+                camera.quaternion.setFromEuler(euler);
+
+                velocity.x -= velocity.x * 5.0 * deltaTime;
+                velocity.z -= velocity.z * 5.0 * deltaTime;
+                velocity.y -= velocity.y * 5.0 * deltaTime;
+                
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveLeft) - Number(moveRight);
+                direction.y = Number(moveDown) - Number(moveUp);
+                direction.normalize(); 
+
+                if (moveForward || moveBackward) velocity.z -= direction.z * movementSpeed * deltaTime;
+                if (moveLeft || moveRight) velocity.x -= direction.x * movementSpeed * deltaTime;
+                if (moveUp || moveDown) velocity.y -= direction.y * movementSpeed * deltaTime;
+                
+                camera.translateX(velocity.x * deltaTime);
+                camera.translateY(velocity.y * deltaTime);
+                camera.translateZ(velocity.z * deltaTime);
+            }
+        }
+
+        // --- Вспомогательные функции ---
+        function toggleFlight() {
+            isFlying = !isFlying;
+            if (isFlying) {
+                earthTime = 0;
+                shipTime = 0;
+            }
+        }
+        
+        function loadModel(url) {
+            const loader = new GLTFLoader();
+            loader.load(url, (gltf) => {
+                if (ship) {
+                    scene.remove(ship);
+                }
+                const newShip = gltf.scene;
+                
+                // Масштабирование и центрирование модели
+                const box = new THREE.Box3().setFromObject(newShip);
+                const size = box.getSize(new THREE.Vector3());
+                const scale = 20 / size.length(); // Масштабируем до размера ~20 юнитов
+                newShip.scale.set(scale, scale, scale);
+                box.setFromObject(newShip); // Пересчитываем box после масштабирования
+                const center = box.getCenter(new THREE.Vector3());
+                newShip.position.sub(center); // Центрируем модель
+                
+                newShip.rotation.x = Math.PI / 2;
+
+                ship = newShip;
+                scene.add(ship);
+
+                // Перепривязываем свет двигателя
+                ship.add(engineLight);
+                engineLight.position.set(0, -size.y * scale / 2, 0); // Помещаем свет в хвост
+
+            }, undefined, (error) => {
+                console.error('Ошибка при загрузке модели:', error);
+                alert('Не удалось загрузить модель. Проверьте ссылку и CORS-политику сервера.');
+            });
+        }
+
+        function onWindowResize() {
+            const container = document.getElementById('visualization-container');
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+        
+        function togglePanelsVisibility() {
+            panelsVisible = !panelsVisible;
+            allPanels.forEach(panel => {
+                if (panel) {
+                    panel.style.display = panelsVisible ? 'flex' : 'none';
+                }
+            });
+        }
+
+        function setupUIControls() {
+            const inputs = document.querySelectorAll('.panel input');
+            inputs.forEach(input => {
+                allPanels.push(input.closest('.panel'));
+                if (input.type === 'range') {
+                    const display = document.getElementById(input.id + 'Value');
+                    input.addEventListener('input', () => {
+                        const value = parseFloat(input.value);
+                        let decimals = input.step.includes('.') ? (input.step.split('.')[1].length || 1) : 0;
+                        if(display) display.textContent = value.toFixed(decimals);
+                        
+                        switch(input.id) {
+                            case 'movementSpeed': movementSpeed = value; break;
+                            case 'mouseSensitivity': mouseSensitivity = value; break;
+                        }
+                    });
+                    input.dispatchEvent(new Event('input'));
+                }
+            });
+
+            document.getElementById('loadModelBtn').addEventListener('click', () => {
+                const url = document.getElementById('modelUrl').value;
+                if (url) {
+                    loadModel(url);
+                }
+            });
+        }
+
+        function createGalaxyTexture() {
+            const canvas = document.createElement('canvas');
+            const size = 256;
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            const center = size / 2;
+            const grad = ctx.createRadialGradient(center, center, 0, center, center, center);
+            grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+            grad.addColorStop(0.2, 'rgba(255, 220, 180, 0.8)');
+            grad.addColorStop(0.6, 'rgba(200, 180, 255, 0.2)');
+            grad.addColorStop(1, 'rgba(200, 180, 255, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, size, size);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        init();
+    </script>
+</body>
+</html>
